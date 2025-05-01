@@ -2,7 +2,6 @@
 
 import { override } from '@microsoft/decorators';
 import { Log } from '@microsoft/sp-core-library';
-import { SPHttpClient } from '@microsoft/sp-http';
 import {
   BaseApplicationCustomizer,
   PlaceholderContent,
@@ -56,6 +55,22 @@ export interface IProcessedItem {
   timestamp: string;
 }
 
+/**
+ * Интерфейсы для HTTP запросов (так как они отсутствуют в вашей версии SPFx)
+ */
+export interface IHttpRequest {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+export interface IHttpResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
 /** 
  * Application Customizer с REST API и пользовательским интерфейсом 
  */
@@ -76,8 +91,8 @@ export default class KpfAplusWithBackendApplicationCustomizer
     'Timetable': 'TestTasks',
     'Schedule': 'TestTasks',
     'Расписание': 'TestTasks',
-    'Tasks': 'TestTasks',      // Добавляем маппинг для "Tasks", чтобы он тоже указывал на "TestTasks"
-    'TestTasks': 'TestTasks'   // Добавляем маппинг для самого себя, чтобы "TestTasks" всегда оставался "TestTasks"
+    'Tasks': 'TestTasks',      // Добавляем маппинг для "Tasks"
+    'TestTasks': 'TestTasks'   // Добавляем маппинг для самого себя
   };
 
   @override
@@ -97,15 +112,6 @@ export default class KpfAplusWithBackendApplicationCustomizer
       // Стандартное логирование (для совместимости)
       Log.info(LOG_SOURCE, `Инициализация ${strings.Title}`);
 
-      // Регистрация REST API конечной точки
-      await this.context.httpClient.get(
-        `${this.context.pageContext.web.absoluteUrl}/_api/SPFx/route/register?name=kpfaplus/api`,
-        SPHttpClient.configurations.v1
-      );
-      await Logger.info(LOG_SOURCE, 'REST API точка зарегистрирована', { 
-        apiPath: 'kpfaplus/api' 
-      });
-
       // Установка обработчиков для плейсхолдеров
       this.context.placeholderProvider.changedEvent.add(this, this._renderPlaceHolders);
 
@@ -123,6 +129,138 @@ export default class KpfAplusWithBackendApplicationCustomizer
         properties: this.properties
       });
       throw error;
+    }
+  }
+
+  /**
+   * Новый метод для обработки HTTP запросов к API
+   * @param request HTTP запрос
+   * @returns HTTP ответ
+   */
+  @override
+  public async onHttpRequest(request: IHttpRequest): Promise<IHttpResponse> {
+    try {
+      // Получаем URL и метод запроса
+      const url = request.url.toLowerCase();
+      const method = request.method.toUpperCase();
+      
+      // Логируем получение HTTP запроса
+      await Logger.info(LOG_SOURCE, `Получен HTTP запрос`, { 
+        url,
+        method,
+        timestamp: new Date().toISOString()
+      });
+
+      // Проверяем, является ли запрос вызовом API processlist
+      //if (url.endsWith('/api/processlist') && method === 'POST') {
+        if (url.indexOf('/api/processlist') === url.length - '/api/processlist'.length && method === 'POST') {
+        // Парсим тело запроса
+        let requestData: IApiRequestData = {};
+        try {
+          if (request.body) {
+            requestData = JSON.parse(request.body);
+            await Logger.info(LOG_SOURCE, `Параметры запроса API`, {
+              ...requestData,
+              timestamp: new Date().toISOString()
+            });
+          }
+        } catch (e) {
+          await Logger.error(LOG_SOURCE, `Ошибка парсинга JSON: ${e}`, { 
+            body: request.body 
+          });
+          
+          // Возвращаем ошибку парсинга
+          return {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              success: false,
+              error: `Ошибка парсинга JSON: ${e instanceof Error ? e.message : String(e)}`
+            })
+          };
+        }
+        
+        // Получаем имя списка из запроса или используем TestTasks по умолчанию
+        const requestedListName = requestData.listName || 'TestTasks';
+        
+        // Получаем реальное имя списка с использованием маппинга
+        const actualListName = this.getActualListName(requestedListName.toString());
+        
+        // Выполняем бизнес-логику с реальным именем списка
+        try {
+          const result = await this.processListBusinessLogic(actualListName, requestData);
+          
+          // Логируем успешное выполнение API запроса
+          await Logger.info(LOG_SOURCE, `API запрос успешно выполнен`, { 
+            requestedListName,
+            actualListName,
+            processedItems: result.length,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Возвращаем успешный результат
+          return {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              success: true,
+              requestedList: requestedListName,
+              actualList: actualListName,
+              processedItems: result.length,
+              items: result,
+              timestamp: new Date().toISOString()
+            })
+          };
+        } catch (processError) {
+          // Логируем ошибку обработки
+          await Logger.error(LOG_SOURCE, `Ошибка при выполнении бизнес-логики: ${processError}`, {
+            requestedListName,
+            actualListName,
+            error: processError instanceof Error ? processError.message : String(processError),
+            stack: processError instanceof Error ? processError.stack : undefined,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Возвращаем ошибку обработки
+          return {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              success: false,
+              error: processError instanceof Error ? processError.message : String(processError)
+            })
+          };
+        }
+      }
+      
+      // Если запрос не соответствует ни одному из API-методов
+      return {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          success: false,
+          error: 'API метод не найден'
+        })
+      };
+    } catch (error) {
+      // Логируем неожиданную ошибку
+      await Logger.critical(LOG_SOURCE, `Неожиданная ошибка при обработке HTTP запроса: ${error}`, {
+        url: request.url,
+        method: request.method,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Возвращаем ошибку сервера
+      return {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          success: false,
+          error: `Внутренняя ошибка сервера: ${error instanceof Error ? error.message : String(error)}`
+        })
+      };
     }
   }
 
@@ -250,114 +388,6 @@ export default class KpfAplusWithBackendApplicationCustomizer
       // Показываем ошибку
       await Dialog.alert(`Ошибка при обработке: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
-
-  /**
-   * Обработчик для API запроса на обработку списка
-   * Будет доступен по URL: _api/kpfaplus/api/processList
-   */
-  @override
-  public async onHttpRequest(url: string, init: RequestInit, response: Response): Promise<Response> {
-    // Разбираем URL для определения запрашиваемого метода API
-    const urlParts = url.toLowerCase().split('/');
-    const apiPath = urlParts[urlParts.length - 1];
-
-    // Обрабатываем запрос processList
-    if (apiPath === 'processlist') {
-      await Logger.info(LOG_SOURCE, `Получен API запрос на обработку списка`, { 
-        url,
-        method: init.method,
-        timestamp: new Date().toISOString()
-      });
-      
-      try {
-        // Получаем параметры запроса
-        let requestBody: IApiRequestData = {};
-        if (init.body) {
-          try {
-            const bodyText = init.body.toString();
-            requestBody = JSON.parse(bodyText);
-            await Logger.info(LOG_SOURCE, `Параметры запроса API`, {
-              ...requestBody,
-              timestamp: new Date().toISOString()
-            });
-          } catch (e) {
-            await Logger.error(LOG_SOURCE, `Ошибка парсинга JSON: ${e}`, { 
-              bodyText: init.body.toString() 
-            });
-          }
-        }
-        
-        // Получаем имя списка из запроса или используем TestTasks по умолчанию
-        const requestedListName = requestBody.listName || 'TestTasks';
-        
-        // Получаем реальное имя списка с использованием маппинга
-        const actualListName = this.getActualListName(requestedListName.toString());
-        
-        // Логируем информацию о реальном имени списка, если оно отличается
-        if (requestedListName !== actualListName) {
-          await Logger.info(LOG_SOURCE, `Переназначение списка`, {
-            requestedListName,
-            actualListName,
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        // Выполняем бизнес-логику с реальным именем списка
-        const result = await this.processListBusinessLogic(actualListName, requestBody);
-        
-        // Обновляем дату последнего запуска
-        localStorage.setItem(this.LOCAL_STORAGE_KEY, new Date().toLocaleString());
-        
-        // Логируем успешное выполнение API запроса
-        await Logger.info(LOG_SOURCE, `API запрос успешно выполнен`, { 
-          requestedListName,
-          actualListName,
-          processedItems: result.length,
-          timestamp: new Date().toISOString()
-        });
-        
-        // Возвращаем результат
-        return Promise.resolve(
-          new Response(JSON.stringify({
-            success: true,
-            requestedList: requestedListName,
-            actualList: actualListName,
-            processedItems: result.length,
-            items: result
-          }), {
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            status: 200
-          })
-        );
-      } catch (error) {
-        // Логируем ошибку API запроса
-        await Logger.error(LOG_SOURCE, `Ошибка при обработке API запроса: ${error}`, {
-          url,
-          method: 'onHttpRequest',
-          timestamp: new Date().toISOString(),
-          stack: error instanceof Error ? error.stack : undefined
-        });
-        
-        // Возвращаем ошибку
-        return Promise.resolve(
-          new Response(JSON.stringify({
-            success: false,
-            error: error instanceof Error ? error.message : String(error)
-          }), {
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            status: 500
-          })
-        );
-      }
-    }
-    
-    // Если запрос не распознан, передаем управление дальше
-    return response;
   }
 
   /**
