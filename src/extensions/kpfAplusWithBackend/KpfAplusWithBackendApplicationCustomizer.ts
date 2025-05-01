@@ -76,7 +76,8 @@ export default class KpfAplusWithBackendApplicationCustomizer
     'Timetable': 'TestTasks',
     'Schedule': 'TestTasks',
     'Расписание': 'TestTasks',
-    // Добавьте другие маппинги при необходимости
+    'Tasks': 'TestTasks',      // Добавляем маппинг для "Tasks", чтобы он тоже указывал на "TestTasks"
+    'TestTasks': 'TestTasks'   // Добавляем маппинг для самого себя, чтобы "TestTasks" всегда оставался "TestTasks"
   };
 
   @override
@@ -175,14 +176,15 @@ export default class KpfAplusWithBackendApplicationCustomizer
           }
           
           // Логируем успешное отображение UI
-          void Logger.info(LOG_SOURCE, 'Пользовательский интерфейс отображен', {
+          Logger.info(LOG_SOURCE, 'Пользовательский интерфейс отображен', {
             lastRunDate: lastRunDate
           }).catch(error => console.error('Ошибка при логировании:', error));
+          
         }
       }
     } catch (error) {
       // Логируем ошибку при отрисовке UI
-      void Logger.error(LOG_SOURCE, `Ошибка при отрисовке UI: ${error}`, {
+      Logger.error(LOG_SOURCE, `Ошибка при отрисовке UI: ${error}`, {
         stack: error instanceof Error ? error.stack : undefined
       }).catch(error => console.error('Ошибка при логировании:', error));
     }
@@ -193,10 +195,9 @@ export default class KpfAplusWithBackendApplicationCustomizer
    */
   private async _runManualProcessing(): Promise<void> {
     try {
-      // Создаем тело запроса (минимальный вариант - только имя списка)
+      // Создаем тело запроса (явно указываем TestTasks)
       const requestBody: IApiRequestData = {
-        listName: this.properties.listName || 'Tasks'
-        // Дополнительные параметры не передаем, они определяются в бизнес-логике
+        listName: "TestTasks" // Явно указываем имя списка, с которым хотим работать
       };
 
       // Получаем реальное имя списка с использованием маппинга
@@ -287,8 +288,8 @@ export default class KpfAplusWithBackendApplicationCustomizer
           }
         }
         
-        // Получаем имя списка из запроса или используем значение по умолчанию
-        const requestedListName = requestBody.listName || 'Tasks';
+        // Получаем имя списка из запроса или используем TestTasks по умолчанию
+        const requestedListName = requestBody.listName || 'TestTasks';
         
         // Получаем реальное имя списка с использованием маппинга
         const actualListName = this.getActualListName(requestedListName.toString());
@@ -401,67 +402,90 @@ export default class KpfAplusWithBackendApplicationCustomizer
       // Инициализация PnP JS для текущего контекста
       const sp = spfi().using(SPFx(this.context));
       
-      // Выбор стратегии обработки в зависимости от имени списка
-      let items = [];
-      switch (listName.toLowerCase()) {
-        case 'testtasks':
-          // Специальная логика для списка TestTasks
-          items = await this.processTestTasksList(sp, listName);
-          break;
-          
-        case 'orders':
-          // Специальная логика для списка Orders
-          items = await this.processOrdersList(sp, listName, requestData);
-          break;
-          
-        case 'customers':
-          // Специальная логика для списка Customers
-          items = await this.processCustomersList(sp, listName, requestData);
-          break;
-          
-        default:
-          // Общая логика по умолчанию - просто обрабатываем элементы со статусом "New"
-          items = await sp.web.lists.getByTitle(listName).items
-            .filter("Status eq 'New'")();
-          break;
-      }
-      
-      await Logger.info(LOG_SOURCE, `Найдено элементов для обработки: ${items.length}`, {
-        listName,
-        timestamp: new Date().toISOString()
-      });
-      
       // Массив для хранения результатов обработки
       const results: IProcessedItem[] = [];
       
-      // Обработка каждого элемента
-      for (const item of items) {
-        await Logger.info(LOG_SOURCE, `Обработка элемента: ${item.ID}`, {
+      try {
+        // Пробуем получить доступ к списку для проверки его существования
+        await sp.web.lists.getByTitle(listName).select('Title')();
+        
+        // Выбор стратегии обработки в зависимости от имени списка
+        let items = [];
+        switch (listName.toLowerCase()) {
+          case 'testtasks':
+            // Специальная логика для списка TestTasks
+            items = await this.processTestTasksList(sp, listName);
+            break;
+            
+          case 'orders':
+            // Специальная логика для списка Orders
+            items = await this.processOrdersList(sp, listName, requestData);
+            break;
+            
+          case 'customers':
+            // Специальная логика для списка Customers
+            items = await this.processCustomersList(sp, listName, requestData);
+            break;
+            
+          default:
+            // Общая логика по умолчанию - просто обрабатываем элементы со статусом "New"
+            items = await sp.web.lists.getByTitle(listName).items
+              .filter("Status eq 'New'")();
+            break;
+        }
+        
+        await Logger.info(LOG_SOURCE, `Найдено элементов для обработки: ${items.length}`, {
           listName,
-          itemId: item.ID,
-          itemTitle: item.Title || 'Без названия',
           timestamp: new Date().toISOString()
         });
         
-        // Обновляем элемент
-        await sp.web.lists.getByTitle(listName).items.getById(item.ID).update({
-          ProcessedDate: new Date().toISOString(),
-          Status: "Processed"
-          // Другие поля для обновления
+        // Обработка каждого элемента
+        for (const item of items) {
+          try {
+            await Logger.info(LOG_SOURCE, `Обработка элемента: ${item.ID}`, {
+              listName,
+              itemId: item.ID,
+              itemTitle: item.Title || 'Без названия',
+              timestamp: new Date().toISOString()
+            });
+            
+            // Обновляем элемент
+            await sp.web.lists.getByTitle(listName).items.getById(item.ID).update({
+              ProcessedDate: new Date().toISOString(),
+              Status: "Processed"
+              // Другие поля для обновления
+            });
+            
+            // Добавляем результат обработки
+            results.push({
+              id: item.ID,
+              title: item.Title || 'Без названия',
+              processed: true,
+              timestamp: new Date().toISOString()
+            });
+            
+            await Logger.info(LOG_SOURCE, `Элемент ${item.ID} успешно обработан`, {
+              itemId: item.ID,
+              timestamp: new Date().toISOString()
+            });
+          } catch (updateError) {
+            // Логируем ошибку обновления элемента, но продолжаем с другими
+            await Logger.error(LOG_SOURCE, `Ошибка при обновлении элемента ${item.ID}: ${updateError}`, {
+              itemId: item.ID,
+              error: updateError instanceof Error ? updateError.message : String(updateError)
+            });
+          }
+        }
+        
+      } catch (listError) {
+        // Обрабатываем ошибку доступа к списку
+        await Logger.error(LOG_SOURCE, `Ошибка при доступе к списку ${listName}: ${listError}`, {
+          listName,
+          error: listError instanceof Error ? listError.message : String(listError)
         });
         
-        // Добавляем результат обработки
-        results.push({
-          id: item.ID,
-          title: item.Title || 'Без названия',
-          processed: true,
-          timestamp: new Date().toISOString()
-        });
-        
-        await Logger.info(LOG_SOURCE, `Элемент ${item.ID} успешно обработан`, {
-          itemId: item.ID,
-          timestamp: new Date().toISOString()
-        });
+        // Выбрасываем исключение, чтобы оно было обработано выше
+        throw new Error(`Список '${listName}' не существует или недоступен. Проверьте имя списка и права доступа.`);
       }
       
       // Возвращаем результаты
@@ -484,13 +508,32 @@ export default class KpfAplusWithBackendApplicationCustomizer
    * @returns Массив элементов для обработки
    */
   private async processTestTasksList(sp: SPFI, listName: string): Promise<Record<string, unknown>[]> {
-    // Специальная логика для списка TestTasks
-    // Например, получаем все задачи со статусом "New" или приоритетом "High"
-    const items = await sp.web.lists.getByTitle(listName).items
-      .filter("Status eq 'New' or Priority eq 'High'")();
+    try {
+      // Специальная логика для списка TestTasks
+      // Сначала проверим, существуют ли элементы с фильтром "Status eq 'New'"
+      const query = "Status eq 'New'";
       
-    await Logger.info(LOG_SOURCE, `Обработка TestTasks: получено ${items.length} элементов`);
-    return items;
+      // Попробуем получить элементы
+      const items = await sp.web.lists.getByTitle(listName).items
+        .filter(query)();
+        
+      await Logger.info(LOG_SOURCE, `Обработка TestTasks: получено ${items.length} элементов`, {
+        filter: query,
+        listName
+      });
+      
+      return items;
+    } catch (error) {
+      // Более подробное логирование ошибки
+      await Logger.error(LOG_SOURCE, `Ошибка при получении элементов из списка ${listName}: ${error}`, {
+        listName,
+        errorDetails: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      
+      // Вернем пустой массив вместо ошибки
+      return [];
+    }
   }
 
   /**
@@ -553,7 +596,7 @@ export default class KpfAplusWithBackendApplicationCustomizer
    * Освобождение ресурсов при уничтожении компонента
    */
   private _onDispose(): void {
-    void Logger.info(LOG_SOURCE, 'Расширение отключено/выгружено')
+    Logger.info(LOG_SOURCE, 'Расширение отключено/выгружено')
       .catch(error => console.error('Ошибка при логировании:', error));
     console.log('Освобождение ресурсов плейсхолдера.');
   }
