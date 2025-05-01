@@ -4,6 +4,6 @@
         Title="KpfAplusWithBackend"
         Location="ClientSideExtension.ApplicationCustomizer"
         ClientSideComponentId="3574a3d3-d056-4fa8-9626-a66af4078510"
-        ClientSideComponentProperties="{&quot;testMessage&quot;:&quot;Test message&quot;}">
+        ClientSideComponentProperties="{&quot;testMessage&quot;:&quot;Сервис KPF A-Plus активен&quot;,&quot;listName&quot;:&quot;Tasks&quot;,&quot;targetField&quot;:&quot;Status&quot;,&quot;targetValue&quot;:&quot;New&quot;}">
     </CustomAction>
 </Elements>

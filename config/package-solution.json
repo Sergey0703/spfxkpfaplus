@@ -7,6 +7,12 @@
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,
+    "webApiPermissionRequests": [
+      {
+        "resource": "Microsoft Graph",
+        "scope": "Sites.ReadWrite.All"
+      }
+    ],
     "developer": {
       "name": "",
       "websiteUrl": "",
@@ -16,10 +22,10 @@
     },
     "metadata": {
       "shortDescription": {
-        "default": "spfxkpfaplus description"
+        "default": "KPF A-Plus Service"
       },
       "longDescription": {
-        "default": "spfxkpfaplus description"
+        "default": "Сервис KPF A-Plus для автоматической обработки списков SharePoint"
       },
       "screenshotPaths": [],
       "videoUrl": "",
