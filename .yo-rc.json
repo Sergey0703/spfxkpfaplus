@@ -1,0 +1,22 @@
+{
+  "@microsoft/generator-sharepoint": {
+    "plusBeta": false,
+    "isCreatingSolution": true,
+    "nodeVersion": "18.17.1",
+    "sdksVersions": {
+      "@microsoft/microsoft-graph-client": "3.0.2",
+      "@microsoft/teams-js": "2.12.0"
+    },
+    "version": "1.19.0",
+    "libraryName": "spfxkpfaplus",
+    "libraryId": "d0a25c2c-6839-4639-b982-08cc9ee500a7",
+    "environment": "spo",
+    "packageManager": "npm",
+    "solutionName": "spfxkpfaplus",
+    "solutionShortDescription": "spfxkpfaplus description",
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "componentType": "extension",
+    "extensionType": "ApplicationCustomizer"
+  }
+}
