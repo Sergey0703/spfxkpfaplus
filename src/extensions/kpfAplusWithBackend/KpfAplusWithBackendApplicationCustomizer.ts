@@ -14,6 +14,7 @@ import { spfi, SPFx, SPFI } from "@pnp/sp";
 import "@pnp/sp/webs";
 import "@pnp/sp/lists";
 import "@pnp/sp/items";
+import "@pnp/sp/fields";
 
 // Импорт логгера
 import { Logger } from './services/Logger';
@@ -80,8 +81,23 @@ export default class KpfAplusWithBackendApplicationCustomizer
   // Плейсхолдер для отображения UI
   private _topPlaceholder: PlaceholderContent | undefined;
   
+  // PnP SP объект для работы с SharePoint
+  private sp: SPFI;
+  
+  // Название списка-триггера для запуска операций
+  private readonly TRIGGER_LIST_NAME = "APlusTrigger";
+  
+  // Интервал таймера - используем number вместо NodeJS.Timeout
+  private timerInterval: number | null = null;
+  
+  // По умолчанию таймер отключен
+  private isTimerActive: boolean = false;
+  
   // Локальный ключ для хранения информации о последнем запуске
   private readonly LOCAL_STORAGE_KEY = 'KPF_DailyService_LastRunDate';
+  
+  // Название списка настроек
+  private readonly SETTINGS_LIST_NAME = "KPFAPlus_Settings";
 
   /**
    * Карта соответствия имен списков
@@ -101,12 +117,19 @@ export default class KpfAplusWithBackendApplicationCustomizer
       // Инициализируем логгер
       Logger.initialize(this.context);
       
+      // Инициализируем PnP SP
+      this.sp = spfi().using(SPFx(this.context));
+      
+      // Загружаем настройки таймера из SharePoint списка
+      await this.loadTimerSettings();
+      
       // Логируем начало инициализации
       await Logger.info(LOG_SOURCE, `Инициализация расширения KPF A-Plus`, {
         version: '1.0.0',
         userAgent: window.navigator.userAgent,
         user: this.context.pageContext.user.displayName,
-        url: window.location.href
+        url: window.location.href,
+        timerActive: this.isTimerActive
       });
       
       // Стандартное логирование (для совместимости)
@@ -117,6 +140,13 @@ export default class KpfAplusWithBackendApplicationCustomizer
 
       // Первая отрисовка UI
       this._renderPlaceHolders();
+
+      // Запускаем таймер для проверки триггер-списка, только если он активен
+      if (this.isTimerActive) {
+        this.startTimer();
+      } else {
+        console.log("Таймер отключен согласно настройкам в SharePoint");
+      }
       
       // Логируем успешную инициализацию
       await Logger.info(LOG_SOURCE, 'Расширение успешно инициализировано');
@@ -152,8 +182,7 @@ export default class KpfAplusWithBackendApplicationCustomizer
       });
 
       // Проверяем, является ли запрос вызовом API processlist
-      //if (url.endsWith('/api/processlist') && method === 'POST') {
-        if (url.indexOf('/api/processlist') === url.length - '/api/processlist'.length && method === 'POST') {
+      if (url.indexOf('/kpfaplus/api/processlist') === url.length - '/kpfaplus/api/processlist'.length && method === 'POST') {
         // Парсим тело запроса
         let requestData: IApiRequestData = {};
         try {
@@ -265,6 +294,230 @@ export default class KpfAplusWithBackendApplicationCustomizer
   }
 
   /**
+   * Загружает настройки таймера из списка SharePoint
+   */
+  private async loadTimerSettings(): Promise<void> {
+    try {
+      // Проверяем существование списка настроек
+      try {
+        // Получаем настройки
+        const settings = await this.sp.web.lists.getByTitle(this.SETTINGS_LIST_NAME).items
+          .filter("Title eq 'TimerSettings'")();
+        
+        if (settings.length > 0) {
+          const setting = settings[0];
+          
+          // Получаем значение EnableAutoCheck
+          this.isTimerActive = setting.EnableAutoCheck === true;
+          
+          console.log(`Загружена настройка таймера: ${this.isTimerActive ? 'активен' : 'неактивен'}`);
+        }
+      } catch (error) {
+        // Если списка настроек нет, используем значение по умолчанию
+        console.log("Список настроек не найден, используем значение по умолчанию (таймер отключен)");
+        this.isTimerActive = false;
+      }
+    } catch (error) {
+      console.error("Ошибка при загрузке настроек таймера:", error);
+      this.isTimerActive = false;
+    }
+  }
+
+  /**
+   * Сохраняет настройки таймера в список SharePoint
+   */
+  private async saveTimerSettings(): Promise<void> {
+    try {
+      // Проверяем существование списка настроек
+      try {
+        const settings = await this.sp.web.lists.getByTitle(this.SETTINGS_LIST_NAME).items
+          .filter("Title eq 'TimerSettings'")();
+        
+        if (settings.length > 0) {
+          // Обновляем существующую запись
+          await this.sp.web.lists.getByTitle(this.SETTINGS_LIST_NAME).items
+            .getById(settings[0].ID).update({
+              EnableAutoCheck: this.isTimerActive
+            });
+          
+          console.log(`Настройка таймера обновлена: ${this.isTimerActive ? 'активен' : 'неактивен'}`);
+        } else {
+          // Создаем новую запись
+          await this.sp.web.lists.getByTitle(this.SETTINGS_LIST_NAME).items.add({
+            Title: "TimerSettings",
+            EnableAutoCheck: this.isTimerActive
+          });
+          
+          console.log(`Настройка таймера создана: ${this.isTimerActive ? 'активен' : 'неактивен'}`);
+        }
+      } catch (error) {
+        // Если список не существует, выводим сообщение
+        console.error(`Ошибка при сохранении настроек: список ${this.SETTINGS_LIST_NAME} не существует.`);
+        console.log(`Пожалуйста, создайте список ${this.SETTINGS_LIST_NAME} вручную и добавьте булево поле EnableAutoCheck.`);
+      }
+    } catch (error) {
+      console.error("Ошибка при сохранении настроек таймера:", error);
+    }
+  }
+
+  /**
+   * Включает или выключает таймер проверки
+   * @param isActive Флаг активности таймера
+   */
+  private toggleTimerActive(isActive: boolean): void {
+    this.isTimerActive = isActive;
+    
+    // Сохраняем состояние в SharePoint списке
+    this.saveTimerSettings().catch(error => {
+      console.error('Ошибка при сохранении настроек таймера:', error);
+    });
+    
+    // Если таймер должен быть остановлен
+    if (!isActive && this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+      console.log("Таймер остановлен пользователем");
+      
+      // Логируем остановку
+      Logger.info(LOG_SOURCE, 'Автоматическая проверка деактивирована пользователем', {
+        user: this.context.pageContext.user.displayName,
+        timestamp: new Date().toISOString()
+      }).catch(error => console.error('Ошибка при логировании:', error));
+    } 
+    // Если таймер должен быть запущен
+    else if (isActive && !this.timerInterval) {
+      this.startTimer();
+      console.log("Таймер запущен пользователем");
+      
+      // Логируем запуск
+      Logger.info(LOG_SOURCE, 'Автоматическая проверка активирована пользователем', {
+        user: this.context.pageContext.user.displayName,
+        timestamp: new Date().toISOString()
+      }).catch(error => console.error('Ошибка при логировании:', error));
+    }
+  }
+
+  /**
+   * Запуск таймера для периодической проверки
+   */
+  private startTimer(): void {
+    // Проверяем, должен ли таймер быть активен
+    if (!this.isTimerActive) {
+      console.log("Таймер отключен согласно настройкам");
+      return;
+    }
+    
+    // Проверяем, не запущен ли уже таймер
+    if (this.timerInterval) {
+      console.log("Таймер уже запущен");
+      return;
+    }
+    
+    // Запускаем таймер каждые 5 минут (300000 миллисекунд)
+    this.timerInterval = setInterval(() => {
+      this.checkListForChanges().catch(error => {
+        console.error('Ошибка при проверке списка:', error);
+      });
+    }, 300000);
+    
+    console.log("Таймер запущен для проверки каждые 5 минут");
+    
+    // Выполним первичную проверку сразу
+    this.checkListForChanges().catch(error => {
+      console.error('Ошибка при первичной проверке списка:', error);
+    });
+  }
+
+  /**
+   * Проверка триггер-списка на наличие элементов для обработки
+   */
+  private async checkListForChanges(): Promise<void> {
+    try {
+      await Logger.info(LOG_SOURCE, "Проверка триггер-списка на предмет изменений", {
+        triggerList: this.TRIGGER_LIST_NAME,
+        timestamp: new Date().toISOString()
+      });
+      
+      try {
+        // Проверяем существование списка перед запросом элементов
+        await this.sp.web.lists.getByTitle(this.TRIGGER_LIST_NAME).select('Title')();
+        
+        // Получаем все элементы из триггер-списка со статусом New
+        const items = await this.sp.web.lists.getByTitle(this.TRIGGER_LIST_NAME).items
+          .filter("Status eq 'New' and Trigger eq 1")();
+        
+        if (items.length === 0) {
+          await Logger.info(LOG_SOURCE, "Элементы для обработки не найдены");
+          return;
+        }
+        
+        // Обрабатываем найденные элементы
+        for (const item of items) {
+          // Получаем параметры из элемента
+          const requestedListName = item.ListName || this.properties.listName || "TestTasks";
+          const actualListName = this.getActualListName(requestedListName);
+          
+          // Создаем объект параметров для обработки
+          const requestBody: IApiRequestData = {
+            listName: actualListName,
+            urgent: item.Urgent === true,
+            customer: item.Customer,
+            region: item.Region,
+            level: item.Level
+          };
+          
+          try {
+            // Запускаем бизнес-логику
+            const result = await this.processListBusinessLogic(actualListName, requestBody);
+            
+            // Обновляем статус элемента
+            await this.sp.web.lists.getByTitle(this.TRIGGER_LIST_NAME).items.getById(item.Id).update({
+              Status: "Processed",
+              ProcessedDate: new Date().toISOString(),
+              ProcessedItems: result.length.toString()
+            });
+            
+            // Обновляем дату последнего запуска
+            const currentDate = new Date().toLocaleString();
+            localStorage.setItem(this.LOCAL_STORAGE_KEY, currentDate);
+            
+            // Обновляем UI
+            this._renderPlaceHolders();
+            
+            await Logger.info(LOG_SOURCE, "Элемент успешно обработан", {
+              itemId: item.Id,
+              processedItems: result.length
+            });
+          } catch (processError) {
+            // Обрабатываем ошибку
+            await Logger.error(LOG_SOURCE, `Ошибка при обработке элемента: ${processError}`, {
+              itemId: item.Id,
+              error: processError instanceof Error ? processError.message : String(processError)
+            });
+            
+            // Обновляем статус элемента
+            await this.sp.web.lists.getByTitle(this.TRIGGER_LIST_NAME).items.getById(item.Id).update({
+              Status: "Error",
+              ErrorMessage: processError instanceof Error ? processError.message : String(processError)
+            });
+          }
+        }
+      } catch (listError) {
+        // Список не существует, выводим информацию в лог
+        await Logger.warning(LOG_SOURCE, `Триггер-список не существует: ${listError}`, {
+          triggerList: this.TRIGGER_LIST_NAME
+        });
+      }
+    } catch (error) {
+      // Общая ошибка
+      await Logger.error(LOG_SOURCE, `Ошибка при проверке списка: ${error}`, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error; // Пробрасываем ошибку для обработки в вызывающем коде
+    }
+  }
+
+  /**
    * Отрисовка элементов пользовательского интерфейса
    */
   private _renderPlaceHolders(): void {
@@ -274,7 +527,7 @@ export default class KpfAplusWithBackendApplicationCustomizer
         // Получаем плейсхолдер для верхней части страницы
         this._topPlaceholder = this.context.placeholderProvider.tryCreateContent(
           PlaceholderName.Top,
-          { onDispose: this._onDispose }
+          { onDispose: this._onDispose.bind(this) }
         );
 
         // Если плейсхолдер существует
@@ -286,14 +539,18 @@ export default class KpfAplusWithBackendApplicationCustomizer
           const element: HTMLElement = document.createElement('div');
           element.className = styles.app;
 
-          // Задаем содержимое панели
+          // Задаем содержимое панели с добавлением переключателя
           element.innerHTML = `
             <div class="${styles.topPanel}">
               <div class="${styles.topPanelContent}">
                 <div class="${styles.topPanelText}">
                   KPF A-Plus Сервис | Последний запуск: ${lastRunDate}
                 </div>
-                <div class="${styles.topPanelButton}">
+                <div class="${styles.topPanelControls}">
+                  <label class="${styles.toggleLabel}">
+                    <input type="checkbox" id="toggleTimerCheckbox" ${this.isTimerActive ? 'checked' : ''} />
+                    Автопроверка
+                  </label>
                   <button id="runApiButton" class="${styles.button}">Запустить обработку</button>
                 </div>
               </div>
@@ -303,7 +560,7 @@ export default class KpfAplusWithBackendApplicationCustomizer
           // Добавляем плейсхолдер в DOM
           this._topPlaceholder.domElement.appendChild(element);
 
-          // Добавляем обработчик события для кнопки
+          // Добавляем обработчик события для кнопки запуска
           const button = document.getElementById('runApiButton');
           if (button) {
             button.addEventListener('click', () => {
@@ -313,15 +570,24 @@ export default class KpfAplusWithBackendApplicationCustomizer
             });
           }
           
-          // Логируем успешное отображение UI
-          Logger.info(LOG_SOURCE, 'Пользовательский интерфейс отображен', {
-            lastRunDate: lastRunDate
-          }).catch(error => console.error('Ошибка при логировании:', error));
+          // Добавляем обработчик события для чекбокса
+          const checkbox = document.getElementById('toggleTimerCheckbox');
+          if (checkbox) {
+            checkbox.addEventListener('change', (e) => {
+              const isChecked = (e.target as HTMLInputElement).checked;
+              this.toggleTimerActive(isChecked);
+            });
+          }
           
+          // Логируем успешное отображение UI с обработкой Promise
+          Logger.info(LOG_SOURCE, 'Пользовательский интерфейс отображен', {
+            lastRunDate: lastRunDate,
+            timerActive: this.isTimerActive
+          }).catch(error => console.error('Ошибка при логировании:', error));
         }
       }
     } catch (error) {
-      // Логируем ошибку при отрисовке UI
+      // Логируем ошибку при отрисовке UI с обработкой Promise
       Logger.error(LOG_SOURCE, `Ошибка при отрисовке UI: ${error}`, {
         stack: error instanceof Error ? error.stack : undefined
       }).catch(error => console.error('Ошибка при логировании:', error));
@@ -329,37 +595,36 @@ export default class KpfAplusWithBackendApplicationCustomizer
   }
 
   /**
-   * Запуск ручной обработки
+   * Запуск ручной обработки через кнопку в UI
    */
   private async _runManualProcessing(): Promise<void> {
     try {
-      // Создаем тело запроса (явно указываем TestTasks)
-      const requestBody: IApiRequestData = {
-        listName: "TestTasks" // Явно указываем имя списка, с которым хотим работать
-      };
-
-      // Получаем реальное имя списка с использованием маппинга
-      const requestedListName = requestBody.listName;
-      const actualListName = this.getActualListName(requestedListName || '');
-
-      // Логируем начало обработки
-      await Logger.info(LOG_SOURCE, 'Ручной запуск обработки', { 
-        requestedListName,
-        actualListName,
-        user: this.context.pageContext.user.displayName,
-        timestamp: new Date().toISOString()
+      await Logger.info(LOG_SOURCE, 'Запуск ручной обработки', {
+        user: this.context.pageContext.user.displayName
       });
-
+      
+      // Получаем имя списка из свойств или используем значение по умолчанию
+      const requestedListName = this.properties.listName || "TestTasks";
+      const actualListName = this.getActualListName(requestedListName);
+      
       // Сообщаем пользователю о начале обработки
       await Dialog.alert(`Запуск обработки списка ${requestedListName}${requestedListName !== actualListName ? ` (будет использован список ${actualListName})` : ''}...`);
-
-      // Выполняем бизнес-логику
+      
+      // Создаем объект параметров для обработки
+      const requestBody: IApiRequestData = {
+        listName: actualListName
+      };
+      
+      // Запускаем бизнес-логику
       const result = await this.processListBusinessLogic(actualListName, requestBody);
-
+      
       // Обновляем дату последнего запуска
       const currentDate = new Date().toLocaleString();
       localStorage.setItem(this.LOCAL_STORAGE_KEY, currentDate);
-
+      
+      // Обновляем UI
+      this._renderPlaceHolders();
+      
       // Логируем успешное завершение
       await Logger.info(LOG_SOURCE, 'Обработка успешно завершена', { 
         requestedListName,
@@ -367,25 +632,22 @@ export default class KpfAplusWithBackendApplicationCustomizer
         itemsProcessed: result.length,
         timestamp: new Date().toISOString()
       });
-
+      
       // Показываем результат пользователю
       await Dialog.alert(`Обработка успешно завершена! 
       Обработано элементов: ${result.length}
       Запрошенный список: ${requestedListName}
       Фактический список: ${actualListName}`);
-      
-      // Обновляем UI
-      this._renderPlaceHolders();
     } catch (error) {
       // Логируем ошибку
-      await Logger.error(LOG_SOURCE, `Ошибка при обработке: ${error}`, {
+      await Logger.error(LOG_SOURCE, `Ошибка при ручной обработке: ${error}`, {
         operation: 'runManualProcessing',
         user: this.context.pageContext.user.displayName,
         properties: this.properties,
         timestamp: new Date().toISOString()
       });
 
-      // Показываем ошибку
+      // Показываем ошибку пользователю
       await Dialog.alert(`Ошибка при обработке: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -429,37 +691,34 @@ export default class KpfAplusWithBackendApplicationCustomizer
         timestamp: new Date().toISOString()
       });
       
-      // Инициализация PnP JS для текущего контекста
-      const sp = spfi().using(SPFx(this.context));
-      
       // Массив для хранения результатов обработки
       const results: IProcessedItem[] = [];
       
       try {
         // Пробуем получить доступ к списку для проверки его существования
-        await sp.web.lists.getByTitle(listName).select('Title')();
+        await this.sp.web.lists.getByTitle(listName).select('Title')();
         
         // Выбор стратегии обработки в зависимости от имени списка
         let items = [];
         switch (listName.toLowerCase()) {
           case 'testtasks':
             // Специальная логика для списка TestTasks
-            items = await this.processTestTasksList(sp, listName);
+            items = await this.processTestTasksList(this.sp, listName);
             break;
             
           case 'orders':
             // Специальная логика для списка Orders
-            items = await this.processOrdersList(sp, listName, requestData);
+            items = await this.processOrdersList(this.sp, listName, requestData);
             break;
             
           case 'customers':
             // Специальная логика для списка Customers
-            items = await this.processCustomersList(sp, listName, requestData);
+            items = await this.processCustomersList(this.sp, listName, requestData);
             break;
             
           default:
             // Общая логика по умолчанию - просто обрабатываем элементы со статусом "New"
-            items = await sp.web.lists.getByTitle(listName).items
+            items = await this.sp.web.lists.getByTitle(listName).items
               .filter("Status eq 'New'")();
             break;
         }
@@ -480,7 +739,7 @@ export default class KpfAplusWithBackendApplicationCustomizer
             });
             
             // Обновляем элемент
-            await sp.web.lists.getByTitle(listName).items.getById(item.ID).update({
+            await this.sp.web.lists.getByTitle(listName).items.getById(item.ID).update({
               ProcessedDate: new Date().toISOString(),
               Status: "Processed"
               // Другие поля для обновления
@@ -626,6 +885,13 @@ export default class KpfAplusWithBackendApplicationCustomizer
    * Освобождение ресурсов при уничтожении компонента
    */
   private _onDispose(): void {
+    // Останавливаем таймер
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+      console.log("Таймер остановлен");
+    }
+    
     Logger.info(LOG_SOURCE, 'Расширение отключено/выгружено')
       .catch(error => console.error('Ошибка при логировании:', error));
     console.log('Освобождение ресурсов плейсхолдера.');
